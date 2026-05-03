@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analizador Léxico-Sintáctico</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <header class="app-header">
+        <h1 class="app-title">Analizador Léxico-Sintáctico</h1>
+    </header>
+
+    <main class="workspace">
+        <section class="panel panel-input">
+            <div class="panel-header">
+                <span class="panel-title">Flujo de entrada</span>
+                <button type="button" id="btn-analyze" class="btn-analyze" aria-label="Analizar">
+                    <span class="btn-analyze__icon" aria-hidden="true">▶</span>
+                    Analizar
+                </button>
+            </div>
+            <div class="editor-wrap">
+                <div class="gutter-col" aria-hidden="true">
+                    <div class="line-numbers" id="line-numbers"></div>
+                </div>
+                <textarea id="code-input" class="code-input" spellcheck="false" rows="1">int main() {
+    int x = 16;
+    return 0;
+}</textarea>
+            </div>
+        </section>
+
+        <section class="panel panel-tokens">
+            <div class="panel-header">
+                <span class="panel-title">Tokens</span>
+                <button type="button" class="icon-btn" id="btn-copy-tokens" title="Copiar tokens"
+                    aria-label="Copiar">⎘</button>
+            </div>
+            <div id="token-output" class="token-output">
+                <div class="token-line">&lt;<span class="token-lexema">'int'</span>, <span
+                        class="token-type">KEYWORD</span>&gt;</div>
+                <div class="token-line">&lt;<span class="token-lexema">'main'</span>, <span
+                        class="token-type">IDENTIFIER</span>&gt;</div>
+            </div>
+        </section>
+
+        <section class="panel panel-tree">
+            <div class="panel-header">
+                <span class="panel-title">Árbol sintáctico</span>
+                <div class="panel-header-actions">
+                    <button type="button" class="icon-btn" title="Acercar" aria-label="Acercar">+</button>
+                    <button type="button" class="icon-btn" title="Alejar" aria-label="Alejar">−</button>
+                    <button type="button" class="icon-btn" title="Restablecer vista" aria-label="Restablecer">↺</button>
+                </div>
+            </div>
+            <div id="tree-area" class="tree-canvas"></div>
+        </section>
+    </main>
+
+    <footer class="statusbar">
+        <div class="statusbar-left">
+            <span class="status-label">Progreso del análisis</span>
+            <span class="status-muted">Estado del sistema</span>
+        </div>
+        <div class="statusbar-right">
+            <span class="status-percent" id="progress-percent">0%</span>
+            <div class="progress-track">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+        </div>
+    </footer>
+
+    <script src="js/app.js"></script>
+</body>
+
+</html>
