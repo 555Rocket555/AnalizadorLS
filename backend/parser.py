@@ -1,21 +1,14 @@
-"""Módulo de parser sintáctico para el Analizador Léxico-Sintáctico.
-
-Construye un árbol de sintaxis abstracta (AST) a partir de la lista de tokens
-producida por el lexer. Está diseñado para un subconjunto de la sintaxis C-like
-utilizada en clase.
-"""
-
 from typing import Any, Dict, List
 
 
 class ParserError(Exception):
-    """Excepción lanzada cuando el parser encuentra una entrada inválida."""
+    def __init__(self, message, lexema=None):
+        self.message = f"{message} (Token: '{lexema}')" if lexema else message
+        super().__init__(self.message)
 
 
 class Parser:
-    """Parser recursivo descendente para un subconjunto de la sintaxis de C."""
-
-    TYPE_SPECIFIERS = {"int", "void", "float", "double"}
+    TYPE_SPECIFIERS = {"int", "void", "float", "double", "char", "boolean", "string"}
 
     def __init__(self, tokens: List[Dict[str, Any]]) -> None:
         self.tokens = [
@@ -24,393 +17,338 @@ class Parser:
             if t["tipo"] not in {"Espacio vacío", "Salto de línea", "Tabulador"}
         ]
         self.current = 0
+        self.nodes = []
+        self.edges = []
+        self.id_counter = 1
+
+    def _new_node(self, label: str, type_name: str) -> int:
+        nid = self.id_counter
+        self.id_counter += 1
+        self.nodes.append({"id": nid, "label": label, "type": type_name})
+        return nid
+
+    def _add_edge(self, from_id: int, to_id: int):
+        self.edges.append({"from": from_id, "to": to_id})
 
     def parse(self) -> Dict[str, Any]:
-        """Parsea todos los tokens y retorna un AST raíz."""
-        children = []
+        root_id = self._new_node("ROOT", "Program")
+        prev_leaves = [root_id]
         while not self._is_at_end():
-            children.append(self._declaration())
-        return {"type": "Program", "label": "Programa", "children": children}
+            stmt_root, stmt_leaves = self._declaration()
+            for leaf in prev_leaves:
+                self._add_edge(leaf, stmt_root)
+            prev_leaves = stmt_leaves
+        return {"nodes": self.nodes, "edges": self.edges}
 
-    def _declaration(self) -> Dict[str, Any]:
+    def _declaration(self):
+        if self._match_lexema("#"):
+            self._consume_lexema("define", "Se esperaba 'define'")
+            name = self._consume_name("Se esperaba identificador")
+            value = self._advance()
+            def_id = self._new_node("#define", "Preprocessor")
+            name_id = self._new_node(name["lexema"], "Variable")
+            val_id = self._new_node(value["lexema"], "Literal")
+            self._add_edge(def_id, name_id)
+            self._add_edge(def_id, val_id)
+            return def_id, [name_id, val_id]
+
         if self._check_lexema_in(self.TYPE_SPECIFIERS):
             return self._parse_declaration()
         return self._statement()
 
-    def _parse_declaration(self) -> Dict[str, Any]:
+    def _parse_declaration(self):
         type_token = self._advance()
-        name = self._consume_name("Se esperaba un identificador después del tipo.")
+        type_id = self._new_node(type_token["lexema"], "Type")
+        name = self._consume_name("Se esperaba identificador")
+        name_id = self._new_node(name["lexema"], "Variable")
 
+        # Es una función con parámetros
         if self._match_lexema("("):
-            params = self._parse_parameter_list()
-            self._consume_lexema(
-                ")", "Se esperaba ')' después de la lista de parámetros."
-            )
-            body = self._compound_statement()
-            label = f"{type_token['lexema']} {name['lexema']}()"
-            children = []
-            if params:
-                children.append(
-                    {"type": "ParameterList", "label": "Parámetros", "children": params}
-                )
-            children.append(body)
-            return {"type": "FunctionDeclaration", "label": label, "children": children}
+            self._add_edge(type_id, name_id)
+            # Procesar parámetros
+            if not self._check_lexema(")"):
+                while True:
+                    p_type = self._advance()
+                    p_name = self._consume_name(
+                        "Se esperaba identificador de parámetro"
+                    )
+                    param_id = self._new_node(
+                        f"{p_type['lexema']} {p_name['lexema']}", "Parameter"
+                    )
+                    self._add_edge(name_id, param_id)
+                    if not self._match_lexema(","):
+                        break
+            self._consume_lexema(")", "Se esperaba )")
+            block_root, block_leaves = self._compound_statement()
+            self._add_edge(name_id, block_root)
+            return type_id, block_leaves
 
-        if self._match_lexema("="):
-            initializer = self._expression()
-            self._consume_lexema(
-                ";", "Se esperaba ';' al final de la declaración de variable."
-            )
-            return {
-                "type": "VariableDeclaration",
-                "label": f"{type_token['lexema']} {name['lexema']}",
-                "children": [initializer],
-            }
-
-        self._consume_lexema(
-            ";", "Se esperaba ';' al final de la declaración de variable."
-        )
-        return {
-            "type": "VariableDeclaration",
-            "label": f"{type_token['lexema']} {name['lexema']}",
-            "children": [],
-        }
-
-    def _parse_parameter_list(self) -> List[Dict[str, Any]]:
-        parameters = []
-        if self._check_lexema(")"):
-            return parameters
-
+        # Declaración de variables
+        leaves = []
         while True:
-            type_token = self._consume_type_specifier(
-                "Se esperaba un tipo en la lista de parámetros."
-            )
-            name = self._consume_name("Se esperaba un identificador de parámetro.")
-            parameters.append(
-                {
-                    "type": "Parameter",
-                    "label": f"{type_token['lexema']} {name['lexema']}",
-                    "children": [],
-                }
-            )
-            if not self._match_lexema(","):
-                break
-        return parameters
+            if self._match_lexema("="):
+                eq_id = self._new_node("=", "Assign")
+                val_root, val_leaves = self._expression()
+                self._add_edge(type_id, eq_id)
+                self._add_edge(eq_id, name_id)
+                self._add_edge(eq_id, val_root)
+                leaves.extend([name_id] + val_leaves)
+            else:
+                self._add_edge(type_id, name_id)
+                leaves.append(name_id)
 
-    def _statement(self) -> Dict[str, Any]:
+            if self._match_lexema(","):
+                name = self._consume_name("Se esperaba identificador")
+                name_id = self._new_node(name["lexema"], "Variable")
+            else:
+                break
+
+        self._consume_lexema(";", "Falta ;")
+        semi_id = self._new_node(";", "Punctuation")
+        for leaf in leaves:
+            self._add_edge(leaf, semi_id)
+        return type_id, [semi_id]
+
+    def _statement(self):
         if self._match_lexema("if"):
             return self._if_statement()
         if self._match_lexema("while"):
             return self._while_statement()
-        if self._match_lexema("for"):
-            return self._for_statement()
         if self._match_lexema("return"):
             return self._return_statement()
+        if self._match_lexema("printf"):
+            return self._printf_call()
         if self._check_lexema("{"):
             return self._compound_statement()
         return self._expression_statement()
 
-    def _if_statement(self) -> Dict[str, Any]:
-        self._consume_lexema("(", "Se esperaba '(' después de 'if'.")
-        condition = self._expression()
-        self._consume_lexema(")", "Se esperaba ')' después de la condición.")
-        then_branch = self._statement()
-        else_branch = None
+    def _while_statement(self):
+        while_id = self._new_node("while", "Keyword")
+        cond_root, cond_leaves = self._expression()
+        self._add_edge(while_id, cond_root)
+
+        self._consume_lexema("do", "Falta do en el while")
+        do_id = self._new_node("do", "Keyword")
+        for leaf in cond_leaves:
+            self._add_edge(leaf, do_id)
+
+        body_root, body_leaves = self._statement()
+        self._add_edge(do_id, body_root)
+        return while_id, body_leaves
+
+    def _if_statement(self):
+        if_id = self._new_node("if", "Keyword")
+        cond_root, cond_leaves = self._expression()
+        self._add_edge(if_id, cond_root)
+
+        self._consume_lexema("then", "Falta then")
+        then_id = self._new_node("then", "Keyword")
+        for leaf in cond_leaves:
+            self._add_edge(leaf, then_id)
+
+        then_root, then_leaves = self._statement()
+        self._add_edge(then_id, then_root)
+
         if self._match_lexema("else"):
-            else_branch = self._statement()
-        children = [
-            {"type": "Condition", "label": "Condición", "children": [condition]},
-            {"type": "Then", "label": "Then", "children": [then_branch]},
-        ]
-        if else_branch:
-            children.append(
-                {"type": "Else", "label": "Else", "children": [else_branch]}
-            )
-        return {"type": "IfStatement", "label": "If", "children": children}
+            else_id = self._new_node("else", "Keyword")
+            for leaf in cond_leaves:
+                self._add_edge(leaf, else_id)
+            else_root, else_leaves = self._statement()
+            self._add_edge(else_id, else_root)
+            return if_id, then_leaves + else_leaves
 
-    def _while_statement(self) -> Dict[str, Any]:
-        self._consume_lexema("(", "Se esperaba '(' después de 'while'.")
-        condition = self._expression()
-        self._consume_lexema(")", "Se esperaba ')' después de la condición.")
-        body = self._statement()
-        return {
-            "type": "WhileStatement",
-            "label": "While",
-            "children": [
-                {"type": "Condition", "label": "Condición", "children": [condition]},
-                body,
-            ],
-        }
+        return if_id, then_leaves
 
-    def _for_statement(self) -> Dict[str, Any]:
-        self._consume_lexema("(", "Se esperaba '(' después de 'for'.")
-        initializer = None
-        if not self._check_lexema(";"):
-            initializer = self._expression_statement(allow_missing_semicolon=True)
-        self._consume_lexema(
-            ";", "Se esperaba ';' después de la inicialización del for."
-        )
-        condition = None
-        if not self._check_lexema(";"):
-            condition = self._expression()
-        self._consume_lexema(";", "Se esperaba ';' después de la condición del for.")
-        increment = None
-        if not self._check_lexema(")"):
-            increment = self._expression()
-        self._consume_lexema(")", "Se esperaba ')' después de la cláusula for.")
-        body = self._statement()
-        children = []
-        if initializer:
-            children.append(
-                {"type": "Initializer", "label": "Init", "children": [initializer]}
-            )
-        if condition:
-            children.append(
-                {"type": "Condition", "label": "Condición", "children": [condition]}
-            )
-        if increment:
-            children.append(
-                {"type": "Increment", "label": "Incremento", "children": [increment]}
-            )
-        children.append(body)
-        return {"type": "ForStatement", "label": "For", "children": children}
+    def _return_statement(self):
+        ret_id = self._new_node("return", "Keyword")
+        val_root, val_leaves = self._expression()
+        self._add_edge(ret_id, val_root)
+        self._consume_lexema(";", "Falta ;")
+        semi_id = self._new_node(";", "Punctuation")
+        for leaf in val_leaves:
+            self._add_edge(leaf, semi_id)
+        return ret_id, [semi_id]
 
-    def _return_statement(self) -> Dict[str, Any]:
-        expr = None
-        if not self._check_lexema(";"):
-            expr = self._expression()
-        self._consume_lexema(";", "Se esperaba ';' después de 'return'.")
-        children = (
-            [{"type": "ReturnValue", "label": "Valor", "children": [expr]}]
-            if expr
-            else []
-        )
-        return {"type": "ReturnStatement", "label": "Return", "children": children}
+    def _printf_call(self):
+        print_id = self._new_node("printf", "Call")
+        self._consume_lexema("(", "Falta (")
+        val_root, val_leaves = self._expression()
+        self._add_edge(print_id, val_root)
+        self._consume_lexema(")", "Falta )")
+        self._consume_lexema(";", "Falta ;")
+        semi_id = self._new_node(";", "Punctuation")
+        for leaf in val_leaves:
+            self._add_edge(leaf, semi_id)
+        return print_id, [semi_id]
 
-    def _compound_statement(self) -> Dict[str, Any]:
-        self._consume_lexema("{", "Se esperaba '{' para iniciar un bloque.")
-        statements = []
-        while not self._check_lexema("}") and not self._is_at_end():
-            statements.append(self._declaration())
-        self._consume_lexema("}", "Se esperaba '}' al final del bloque.")
-        return {"type": "Block", "label": "Bloque", "children": statements}
+    def _expression_statement(self):
+        expr_root, expr_leaves = self._expression()
+        self._consume_lexema(";", "Falta ;")
+        semi_id = self._new_node(";", "Punctuation")
+        for leaf in expr_leaves:
+            self._add_edge(leaf, semi_id)
+        return expr_root, [semi_id]
 
-    def _expression_statement(
-        self, allow_missing_semicolon: bool = False
-    ) -> Dict[str, Any]:
-        if self._check_lexema(";"):
-            self._consume_lexema(";", "Se esperaba ';'.")
-            return {"type": "EmptyStatement", "label": ";", "children": []}
-        expr = self._expression()
-        if not allow_missing_semicolon:
-            self._consume_lexema(";", "Se esperaba ';' al final de la expresión.")
-        return {"type": "ExpressionStatement", "label": "Expr", "children": [expr]}
-
-    def _expression(self) -> Dict[str, Any]:
+    # === JERARQUÍA ESTRICTA DE OPERADORES ===
+    def _expression(self):
         return self._assignment()
 
-    def _assignment(self) -> Dict[str, Any]:
-        expr = self._logical_or()
+    def _assignment(self):
+        left_root, left_leaves = self._logical_or()
         if self._match_lexema("="):
-            equals = self._previous()
-            value = self._assignment()
-            if expr["type"] != "Identifier":
-                raise ParserError(
-                    "La asignación debe tener un identificador en el lado izquierdo."
-                )
-            return {
-                "type": "Assignment",
-                "label": equals["lexema"],
-                "children": [expr, value],
-            }
-        return expr
+            op = self._previous()
+            eq_id = self._new_node(op["lexema"], "Assign")
+            right_root, right_leaves = self._assignment()
+            self._add_edge(eq_id, left_root)
+            self._add_edge(eq_id, right_root)
+            return eq_id, left_leaves + right_leaves
+        return left_root, left_leaves
 
-    def _logical_or(self) -> Dict[str, Any]:
-        expr = self._logical_and()
+    def _logical_or(self):
+        left_root, left_leaves = self._logical_and()
         while self._match_lexema("||"):
-            operator = self._previous()
-            right = self._logical_and()
-            expr = {
-                "type": "LogicalExpression",
-                "label": operator["lexema"],
-                "children": [expr, right],
-            }
-        return expr
+            op_id = self._new_node("||", "Logical")
+            right_root, right_leaves = self._logical_and()
+            self._add_edge(op_id, left_root)
+            self._add_edge(op_id, right_root)
+            left_root, left_leaves = op_id, left_leaves + right_leaves
+        return left_root, left_leaves
 
-    def _logical_and(self) -> Dict[str, Any]:
-        expr = self._equality()
+    def _logical_and(self):
+        left_root, left_leaves = self._equality()
         while self._match_lexema("&&"):
-            operator = self._previous()
-            right = self._equality()
-            expr = {
-                "type": "LogicalExpression",
-                "label": operator["lexema"],
-                "children": [expr, right],
-            }
-        return expr
+            op_id = self._new_node("&&", "Logical")
+            right_root, right_leaves = self._equality()
+            self._add_edge(op_id, left_root)
+            self._add_edge(op_id, right_root)
+            left_root, left_leaves = op_id, left_leaves + right_leaves
+        return left_root, left_leaves
 
-    def _equality(self) -> Dict[str, Any]:
-        expr = self._comparison()
+    def _equality(self):
+        left_root, left_leaves = self._comparison()
         while self._match_lexema("==", "!="):
-            operator = self._previous()
-            right = self._comparison()
-            expr = {
-                "type": "BinaryExpression",
-                "label": operator["lexema"],
-                "children": [expr, right],
-            }
-        return expr
+            op = self._previous()
+            op_id = self._new_node(op["lexema"], "Binary")
+            right_root, right_leaves = self._comparison()
+            self._add_edge(op_id, left_root)
+            self._add_edge(op_id, right_root)
+            left_root, left_leaves = op_id, left_leaves + right_leaves
+        return left_root, left_leaves
 
-    def _comparison(self) -> Dict[str, Any]:
-        expr = self._term()
+    def _comparison(self):
+        left_root, left_leaves = self._term()
         while self._match_lexema("<", ">", "<=", ">="):
-            operator = self._previous()
-            right = self._term()
-            expr = {
-                "type": "BinaryExpression",
-                "label": operator["lexema"],
-                "children": [expr, right],
-            }
-        return expr
+            op = self._previous()
+            op_id = self._new_node(op["lexema"], "Binary")
+            right_root, right_leaves = self._term()
+            self._add_edge(op_id, left_root)
+            self._add_edge(op_id, right_root)
+            left_root, left_leaves = op_id, left_leaves + right_leaves
+        return left_root, left_leaves
 
-    def _term(self) -> Dict[str, Any]:
-        expr = self._factor()
+    def _term(self):  # Sumas y restas
+        left_root, left_leaves = self._factor()
         while self._match_lexema("+", "-"):
-            operator = self._previous()
-            right = self._factor()
-            expr = {
-                "type": "BinaryExpression",
-                "label": operator["lexema"],
-                "children": [expr, right],
-            }
-        return expr
+            op = self._previous()
+            op_id = self._new_node(op["lexema"], "Binary")
+            right_root, right_leaves = self._factor()
+            self._add_edge(op_id, left_root)
+            self._add_edge(op_id, right_root)
+            left_root, left_leaves = op_id, left_leaves + right_leaves
+        return left_root, left_leaves
 
-    def _factor(self) -> Dict[str, Any]:
-        expr = self._unary()
-        while self._match_lexema("*", "/"):
-            operator = self._previous()
-            right = self._unary()
-            expr = {
-                "type": "BinaryExpression",
-                "label": operator["lexema"],
-                "children": [expr, right],
-            }
-        return expr
+    def _factor(
+        self,
+    ):  # Multiplicación, división, módulo (Tienen prioridad sobre + y -)
+        left_root, left_leaves = self._unary()
+        while self._match_lexema("*", "/", "%"):
+            op = self._previous()
+            op_id = self._new_node(op["lexema"], "Binary")
+            right_root, right_leaves = self._unary()
+            self._add_edge(op_id, left_root)
+            self._add_edge(op_id, right_root)
+            left_root, left_leaves = op_id, left_leaves + right_leaves
+        return left_root, left_leaves
 
-    def _unary(self) -> Dict[str, Any]:
-        if self._match_lexema("-", "!"):
-            operator = self._previous()
-            right = self._unary()
-            return {
-                "type": "UnaryExpression",
-                "label": operator["lexema"],
-                "children": [right],
-            }
+    def _unary(self):  # Negaciones o incrementos (++x, !bandera)
+        if self._match_lexema("!", "++", "--", "-"):
+            op = self._previous()
+            op_id = self._new_node(op["lexema"], "Unary")
+            right_root, right_leaves = self._unary()
+            self._add_edge(op_id, right_root)
+            return op_id, right_leaves
         return self._primary()
 
-    def _primary(self) -> Dict[str, Any]:
-        if self._match_type("Integer"):
-            return {
-                "type": "Literal",
-                "label": self._previous()["lexema"],
-                "children": [],
-            }
-        if self._match_type("Float"):
-            return {
-                "type": "Literal",
-                "label": self._previous()["lexema"],
-                "children": [],
-            }
-        if self._match_type("Cadena"):
-            return {
-                "type": "Literal",
-                "label": self._previous()["lexema"],
-                "children": [],
-            }
-        if self._match_type("Variable"):
-            return {
-                "type": "Identifier",
-                "label": self._previous()["lexema"],
-                "children": [],
-            }
-        if self._match_lexema("("):
-            expr = self._expression()
-            self._consume_lexema(")", "Se esperaba ')' después de la expresión.")
-            return {"type": "Grouping", "label": "()", "children": [expr]}
-        raise ParserError(f"Token inesperado: {self._peek()['lexema']}")
-
-    def _match_lexema(self, *lexemas: str) -> bool:
-        if self._check_lexema_any(lexemas):
-            self._advance()
-            return True
-        return False
-
-    def _check_lexema(self, lexema: str) -> bool:
-        if self._is_at_end():
-            return False
-        return self._peek()["lexema"] == lexema
-
-    def _check_lexema_any(self, lexemas: List[str]) -> bool:
-        if self._is_at_end():
-            return False
-        return self._peek()["lexema"] in lexemas
-
-    def _check_lexema_in(self, lexemas: set) -> bool:
-        if self._is_at_end():
-            return False
-        return self._peek()["lexema"] in lexemas
-
-    def _match_type(self, tipo: str) -> bool:
-        if self._is_at_end():
-            return False
-        if self._peek()["tipo"] == tipo:
-            self._advance()
-            return True
-        return False
-
-    def _consume(self, tipo: str, mensaje: str) -> Dict[str, Any]:
-        if self._match_type(tipo):
-            return self._previous()
-        raise ParserError(mensaje)
-
-    def _consume_name(self, mensaje: str) -> Dict[str, Any]:
-        if self._check_type("Variable") or (
-            self._check_lexema("main") and self._peek()["tipo"] == "Palabra Reservada"
+    def _primary(self):
+        if (
+            self._match_type("Integer")
+            or self._match_type("Float")
+            or self._match_type("Cadena")
+            or self._match_type("Variable")
         ):
-            return self._advance()
-        raise ParserError(mensaje)
+            nid = self._new_node(self._previous()["lexema"], "Literal")
+            return nid, [nid]
+        if self._match_lexema("("):
+            expr_root, expr_leaves = self._expression()
+            self._consume_lexema(")", "Falta )")
+            return expr_root, expr_leaves
+        raise ParserError("Token inesperado", self._peek()["lexema"])
 
-    def _consume_type_specifier(self, mensaje: str) -> Dict[str, Any]:
-        if self._check_type_specifier():
-            return self._advance()
-        raise ParserError(mensaje)
+    def _compound_statement(self):
+        self._consume_lexema("{", "Falta {")
+        block_id = self._new_node("{}", "Block")
+        prev_leaves = [block_id]
+        while not self._is_at_end() and not self._check_lexema("}"):
+            stmt_root, stmt_leaves = self._declaration()
+            for leaf in prev_leaves:
+                self._add_edge(leaf, stmt_root)
+            prev_leaves = stmt_leaves
+        self._consume_lexema("}", "Falta }")
+        return block_id, prev_leaves
 
-    def _consume_lexema(self, lexema: str, mensaje: str) -> Dict[str, Any]:
-        if self._check_lexema(lexema):
-            return self._advance()
-        raise ParserError(mensaje)
+    # --- Utilidades Base ---
+    def _is_at_end(self):
+        return self.current >= len(self.tokens)
 
-    def _check_type_specifier(self) -> bool:
-        return (
-            self._check_type("Palabra Reservada")
-            and self._peek()["lexema"] in self.TYPE_SPECIFIERS
-        )
-
-    def _check_type(self, tipo: str) -> bool:
-        if self._is_at_end():
-            return False
-        return self._peek()["tipo"] == tipo
-
-    def _peek(self) -> Dict[str, Any]:
+    def _peek(self):
         return self.tokens[self.current]
 
-    def _previous(self) -> Dict[str, Any]:
+    def _previous(self):
         return self.tokens[self.current - 1]
 
-    def _advance(self) -> Dict[str, Any]:
+    def _advance(self):
         if not self._is_at_end():
             self.current += 1
-        return self.tokens[self.current - 1]
+        return self._previous()
 
-    def _is_at_end(self) -> bool:
-        return self.current >= len(self.tokens)
+    def _check_lexema_in(self, s):
+        return not self._is_at_end() and self._peek()["lexema"] in s
+
+    def _match_lexema(self, *lexemas):
+        for l in lexemas:
+            if not self._is_at_end() and self._peek()["lexema"] == l:
+                self._advance()
+                return True
+        return False
+
+    def _match_type(self, t):
+        if not self._is_at_end() and self._peek()["tipo"] == t:
+            self._advance()
+            return True
+        return False
+
+    def _consume_lexema(self, l, msg):
+        if not self._is_at_end() and self._peek()["lexema"] == l:
+            return self._advance()
+        raise ParserError(msg, self._peek()["lexema"])
+
+    def _consume_name(self, msg):
+        if not self._is_at_end() and self._peek()["tipo"] in [
+            "Variable",
+            "Palabra Reservada",
+        ]:
+            return self._advance()
+        raise ParserError(msg, self._peek()["lexema"])
+
+    def _check_lexema(self, l):
+        return not self._is_at_end() and self._peek()["lexema"] == l
