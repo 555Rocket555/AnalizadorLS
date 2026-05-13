@@ -20,6 +20,7 @@ class Parser:
         self.nodes = []
         self.edges = []
         self.id_counter = 1
+        self.errors = []  # NUEVO: Lista para almacenar múltiples errores
 
     def _new_node(self, label: str, type_name: str) -> int:
         nid = self.id_counter
@@ -30,16 +31,53 @@ class Parser:
     def _add_edge(self, from_id: int, to_id: int):
         self.edges.append({"from": from_id, "to": to_id})
 
+    # ==========================================
+    # LÓGICA PRINCIPAL CON MODO PÁNICO
+    # ==========================================
     def parse(self) -> Dict[str, Any]:
-        root_id = self._new_node("ROOT", "Program")
+        root_id = self._new_node("Inicio", "Program")
         prev_leaves = [root_id]
-        while not self._is_at_end():
-            stmt_root, stmt_leaves = self._declaration()
-            for leaf in prev_leaves:
-                self._add_edge(leaf, stmt_root)
-            prev_leaves = stmt_leaves
-        return {"nodes": self.nodes, "edges": self.edges}
 
+        while not self._is_at_end():
+            try:
+                stmt_root, stmt_leaves = self._declaration()
+                for leaf in prev_leaves:
+                    self._add_edge(leaf, stmt_root)
+                prev_leaves = stmt_leaves
+            except ParserError as e:
+                # MODO PÁNICO: Atrapamos el error, lo guardamos y sincronizamos
+                self.errors.append(e.message)
+                self._synchronize()
+
+        return {"nodes": self.nodes, "edges": self.edges, "errors": self.errors}
+
+    def _synchronize(self):
+        """Avanza los tokens hasta encontrar un punto seguro para reanudar el análisis"""
+        self._advance()
+        while not self._is_at_end():
+            # Si acabamos de pasar un punto y coma, estamos a salvo
+            if self._previous()["lexema"] == ";":
+                return
+            # Si el siguiente token es el inicio de una nueva declaración, estamos a salvo
+            peek_lexema = self._peek()["lexema"]
+            if peek_lexema in [
+                "int",
+                "float",
+                "char",
+                "boolean",
+                "string",
+                "void",
+                "if",
+                "while",
+                "return",
+                "printf",
+            ]:
+                return
+            self._advance()
+
+    # ==========================================
+    # RESTO DE LA GRAMÁTICA (Intacta)
+    # ==========================================
     def _declaration(self):
         if self._match_lexema("#"):
             self._consume_lexema("define", "Se esperaba 'define'")
@@ -62,10 +100,8 @@ class Parser:
         name = self._consume_name("Se esperaba identificador")
         name_id = self._new_node(name["lexema"], "Variable")
 
-        # Es una función con parámetros
         if self._match_lexema("("):
             self._add_edge(type_id, name_id)
-            # Procesar parámetros
             if not self._check_lexema(")"):
                 while True:
                     p_type = self._advance()
@@ -83,7 +119,6 @@ class Parser:
             self._add_edge(name_id, block_root)
             return type_id, block_leaves
 
-        # Declaración de variables
         leaves = []
         while True:
             if self._match_lexema("="):
@@ -189,7 +224,6 @@ class Parser:
             self._add_edge(leaf, semi_id)
         return expr_root, [semi_id]
 
-    # === JERARQUÍA ESTRICTA DE OPERADORES ===
     def _expression(self):
         return self._assignment()
 
@@ -246,7 +280,7 @@ class Parser:
             left_root, left_leaves = op_id, left_leaves + right_leaves
         return left_root, left_leaves
 
-    def _term(self):  # Sumas y restas
+    def _term(self):
         left_root, left_leaves = self._factor()
         while self._match_lexema("+", "-"):
             op = self._previous()
@@ -257,9 +291,7 @@ class Parser:
             left_root, left_leaves = op_id, left_leaves + right_leaves
         return left_root, left_leaves
 
-    def _factor(
-        self,
-    ):  # Multiplicación, división, módulo (Tienen prioridad sobre + y -)
+    def _factor(self):
         left_root, left_leaves = self._unary()
         while self._match_lexema("*", "/", "%"):
             op = self._previous()
@@ -270,7 +302,7 @@ class Parser:
             left_root, left_leaves = op_id, left_leaves + right_leaves
         return left_root, left_leaves
 
-    def _unary(self):  # Negaciones o incrementos (++x, !bandera)
+    def _unary(self):
         if self._match_lexema("!", "++", "--", "-"):
             op = self._previous()
             op_id = self._new_node(op["lexema"], "Unary")
@@ -299,10 +331,15 @@ class Parser:
         block_id = self._new_node("{}", "Block")
         prev_leaves = [block_id]
         while not self._is_at_end() and not self._check_lexema("}"):
-            stmt_root, stmt_leaves = self._declaration()
-            for leaf in prev_leaves:
-                self._add_edge(leaf, stmt_root)
-            prev_leaves = stmt_leaves
+            try:
+                stmt_root, stmt_leaves = self._declaration()
+                for leaf in prev_leaves:
+                    self._add_edge(leaf, stmt_root)
+                prev_leaves = stmt_leaves
+            except ParserError as e:
+                # MODO PÁNICO (DENTRO DE BLOQUES)
+                self.errors.append(e.message)
+                self._synchronize()
         self._consume_lexema("}", "Falta }")
         return block_id, prev_leaves
 
